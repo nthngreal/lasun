@@ -92,6 +92,7 @@ class RealMarkupTest(unittest.TestCase):
             self.assertEqual((x["old_price"], x["kcal"], x["detail_ts"]), (None, None, None))
             self.assertEqual(y["kcal"], 55)
             self.assertEqual(st.last_crawl(), 0)
+            st.con.close()  # Windows не видалить відкриту базу
 
 
 class NutritionTest(unittest.TestCase):
