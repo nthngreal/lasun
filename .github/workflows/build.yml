@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   linux:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -40,6 +40,7 @@ jobs:
       - name: Self-test the built program
         env:
           QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
         run: |
           dist/Lasun/Lasun --selftest "$PWD/selftest.txt"
           cat selftest.txt
@@ -51,6 +52,7 @@ jobs:
           sha256sum Lasun-linux-x86_64.tar.gz > Lasun-linux-x86_64.tar.gz.sha256
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: linux
           path: |
@@ -112,6 +114,7 @@ jobs:
           "$h  Lasun-windows-x64.zip" | Out-File -Encoding ascii Lasun-windows-x64.zip.sha256
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: windows
           path: |

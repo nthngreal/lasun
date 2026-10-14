@@ -222,6 +222,10 @@ def parse_card(slug, chunk):
         if m:
             name = htmlmod.unescape(m.group(1)).strip()
             break
+    if name:
+        # alt на сайті: «Купити Йогурт ... у АТБ Market»
+        name = re.sub(r"^\s*Купити\s+", "", name)
+        name = re.sub(r"\s+(?:у|в)\s+АТБ.*$", "", name).strip()
     if not name:
         lines = [ln for ln in text.split("\n") if re.search(r"[А-Яа-яІіЇїЄєҐґ]{3}", ln)]
         name = max(lines, key=len)[:200] if lines else slug
@@ -650,9 +654,14 @@ def check_site():
         d = parse_card(slug, chunk)
         out.append("  %s | %s | old %s | -%s%% %s" % (d["name"][:50], d["price"], d["old_price"],
                                                      d["discount"], d["promo_until"]))
-    for slug, _ in cards[:2]:
+    for slug, _ in cards[:3]:
         time.sleep(1)
-        d = parse_product_page(http_get("%s/product/%s" % (SITE, slug)) or "")
-        out.append("  product %s: kcal=%s sugar=%s weight=%s" % (
-            (d.get("name") or slug)[:40], d.get("kcal"), d.get("sugar"), d.get("weight")))
+        page = http_get("%s/product/%s" % (SITE, slug)) or ""
+        d = parse_product_page(page)
+        out.append("  product %s: kcal=%s sugar=%s protein=%s weight=%s" % (
+            (d.get("name") or slug)[:40], d.get("kcal"), d.get("sugar"), d.get("protein"),
+            d.get("weight")))
+        text = to_text(page)
+        for m in _NUTRI_START.finditer(text):
+            out.append("    …%s…" % text[max(0, m.start() - 80):m.start() + 160].replace("\n", " | "))
     return out, html
