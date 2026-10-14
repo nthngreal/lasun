@@ -1,0 +1,133 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3
+          python -m pip install PySide6-Essentials pyinstaller
+
+      - name: Test
+        run: python -m unittest discover tests
+
+      - name: Can the ATB site be read from here? (diagnostic, never fails the build)
+        continue-on-error: true
+        run: python lasun.py --check-site site-check.txt
+
+      - name: Build folder
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name Lasun \
+            --add-data lasun/assets:lasun/assets lasun.py
+          chmod +x dist/Lasun/Lasun
+
+      - name: Self-test the built program
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          dist/Lasun/Lasun --selftest "$PWD/selftest.txt"
+          cat selftest.txt
+          grep -q '^OK$' selftest.txt
+
+      - name: Pack
+        run: |
+          tar -C dist -czf Lasun-linux-x86_64.tar.gz Lasun
+          sha256sum Lasun-linux-x86_64.tar.gz > Lasun-linux-x86_64.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            Lasun-linux-x86_64.tar.gz
+            Lasun-linux-x86_64.tar.gz.sha256
+            selftest.txt
+            selftest.png
+            site-check.txt*
+
+      - name: Publish to the "latest" release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Lasun (latest build)
+          make_latest: true
+          target_commitish: ${{ github.sha }}
+          files: |
+            Lasun-linux-x86_64.tar.gz
+            Lasun-linux-x86_64.tar.gz.sha256
+
+  windows:
+    needs: linux            # one job at a time touches the release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: python -m pip install PySide6-Essentials pyinstaller
+
+      - name: Test
+        run: python -m unittest discover tests
+
+      - name: Build folder
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name Lasun `
+            --icon lasun/assets/lasun.ico `
+            --add-data "lasun/assets;lasun/assets" lasun.py
+
+      - name: Self-test the built program
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $p = Start-Process -FilePath dist\Lasun\Lasun.exe -ArgumentList '--selftest', "$PWD\selftest.txt" -Wait -PassThru
+          Get-Content selftest.txt
+          if ($p.ExitCode -ne 0 -or -not (Select-String -Path selftest.txt -Pattern '^OK$' -Quiet)) { exit 1 }
+
+      - name: Pack
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\Lasun -DestinationPath Lasun-windows-x64.zip
+          $h = (Get-FileHash Lasun-windows-x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$h  Lasun-windows-x64.zip" | Out-File -Encoding ascii Lasun-windows-x64.zip.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            Lasun-windows-x64.zip
+            Lasun-windows-x64.zip.sha256
+            selftest.txt
+            selftest.png
+
+      - name: Publish to the "latest" release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Lasun (latest build)
+          make_latest: true
+          target_commitish: ${{ github.sha }}
+          files: |
+            Lasun-windows-x64.zip
+            Lasun-windows-x64.zip.sha256
