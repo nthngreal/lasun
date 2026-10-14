@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: [".github/workflows/sitedump.yml"]
+    paths: [".github/workflows/sitedump.yml", "lasun/core.py"]
 
 permissions:
   contents: write
@@ -13,19 +13,33 @@ jobs:
   dump:
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Fetch ATB pages
         run: |
-          mkdir dump && cd dump
-          UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
-          get() { curl -sSL --compressed -A "$UA" -H "Accept-Language: uk-UA,uk;q=0.9" -o "$1" "https://www.atbmarket.com$2" || true; sleep 2; }
-          get morozivo.html /catalog/334-morozivo
-          get morozivo-p2.html "/catalog/334-morozivo?page=2"
-          get yogurti.html /catalog/349-yogurti
-          get rud.html /product/morozivo-05-kg-rud-100-morozivo
-          slug=$(grep -o 'href="/product/[^"]*limo[^"]*1965[^"]*"' morozivo*.html | head -1 | sed 's/.*\/product\///;s/"$//')
-          echo "limo slug: $slug"
-          [ -n "$slug" ] && get limo.html "/product/$slug"
-          ls -la
+          mkdir dump
+          python - <<'PY'
+          import re, time
+          from lasun.core import http_get, SITE
+          def get(name, path):
+              try:
+                  h = http_get(SITE + path) or ""
+              except Exception as e:
+                  h = "ERROR %r" % e
+              open("dump/" + name, "w", encoding="utf-8").write(h)
+              print(name, len(h))
+              time.sleep(2)
+              return h
+          a = get("morozivo.html", "/catalog/334-morozivo")
+          b = get("morozivo-p2.html", "/catalog/334-morozivo?page=2")
+          get("yogurti.html", "/catalog/349-yogurti")
+          get("rud.html", "/product/morozivo-05-kg-rud-100-morozivo")
+          m = re.search(r'/product/([^"]*limo[^"]*1965[^"]*)"', a + b)
+          if m:
+              get("limo.html", "/product/" + m.group(1))
+          PY
       - name: Push to dump branch
         run: |
           cd dump
