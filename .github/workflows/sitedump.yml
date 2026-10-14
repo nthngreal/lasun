@@ -1,0 +1,35 @@
+name: Site dump (debug)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/sitedump.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  dump:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch ATB pages
+        run: |
+          mkdir dump && cd dump
+          UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+          get() { curl -sSL --compressed -A "$UA" -H "Accept-Language: uk-UA,uk;q=0.9" -o "$1" "https://www.atbmarket.com$2" || true; sleep 2; }
+          get morozivo.html /catalog/334-morozivo
+          get morozivo-p2.html "/catalog/334-morozivo?page=2"
+          get yogurti.html /catalog/349-yogurti
+          get rud.html /product/morozivo-05-kg-rud-100-morozivo
+          slug=$(grep -o 'href="/product/[^"]*limo[^"]*1965[^"]*"' morozivo*.html | head -1 | sed 's/.*\/product\///;s/"$//')
+          echo "limo slug: $slug"
+          [ -n "$slug" ] && get limo.html "/product/$slug"
+          ls -la
+      - name: Push to dump branch
+        run: |
+          cd dump
+          git init -q -b sitedump
+          git add -A
+          git -c user.name=ci -c user.email=ci@local commit -qm dump
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" sitedump
