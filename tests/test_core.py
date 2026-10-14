@@ -32,6 +32,15 @@ class NutritionTest(unittest.TestCase):
     def test_kj_only(self):
         self.assertAlmostEqual(core.parse_nutrition("Енергетична цінність 418 кДж")["kcal"], 99.9, 1)
 
+    def test_atb_characteristics_block(self):
+        # так виглядає блок «Харчові властивості» на сторінці товару АТБ (14.10.2026)
+        t = ("Склад: молоко, закваска бактеріальна.\n Харчові властивості \n Калорійність \n "
+             "1791 кДж/100г \n Вуглеводи \n 88.1 г/100г \n Білки \n 2 г/100г \n Жири \n "
+             "2 г/100г \n Загальна інформація \n Торгова марка \n Дольче")
+        d = core.parse_nutrition(t)
+        self.assertAlmostEqual(d["kcal"], 428.1, 1)
+        self.assertEqual((d.get("sugar"), d["carbs"], d["protein"], d["fat"]), (None, 88.1, 2.0, 2.0))
+
     def test_no_nutrition(self):
         self.assertEqual(core.parse_nutrition("Склад: какао терте, цукор 45%."), {})
 
@@ -74,6 +83,14 @@ class PortionTest(unittest.TestCase):
 
     def test_zero_drink(self):
         self.assertEqual(core.portion(self.p(kcal=0.3, sugar=0, liquid=1), 0, 0, 250)["kind"], "free")
+
+
+class TierTest(unittest.TestCase):
+    def test_unknown_sugar_never_green(self):
+        p = {"kcal": 60, "sugar": None, "carbs": 12, "liquid": 0}
+        self.assertEqual(core.tier(p), core.YELLOW)
+        p["carbs"] = 3          # вуглеводів мало — отже, і цукру мало
+        self.assertEqual(core.tier(p), core.GREEN)
 
 
 class StoreTest(unittest.TestCase):

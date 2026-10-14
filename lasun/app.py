@@ -166,7 +166,7 @@ class ProductCard(QFrame):
         color = theme.TIER_COLORS[tier]
         key = "nutri" if p["sugar"] is not None else "nutri_nosugar"
         nut = t(key, kcal=round(p["kcal"]), sugar=fnum(p["sugar"], win.lang),
-                protein=fnum(p["protein"], win.lang))
+                carbs=fnum(p.get("carbs"), win.lang), protein=fnum(p["protein"], win.lang))
         lay.addWidget(label('<span style="color:%s">●</span> %s' % (color, html.escape(nut)),
                             wrap=True))
         src = t("src_atb") if p["src"] == "atb" else t("src_off")

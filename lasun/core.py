@@ -281,7 +281,7 @@ def parse_nutrition(text):
         if m and num(m.group(1)):
             out["kcal"] = round(num(m.group(1)) / 4.184, 1)
     for key, pat in (("sugar", r"цукр(?:и|ів|ах)?\b"), ("protein", r"білк\w*"),
-                     ("fat", r"жир\w*(?:\s*загалом)?")):
+                     ("fat", r"жир\w*(?:\s*загалом)?"), ("carbs", r"вуглевод\w*")):
         m = re.search(pat + r"\W{0,20}?(\d+(?:[.,]\d+)?)\s*г", low)
         if not m:
             m = re.search(pat + r"\W{0,20}?(\d+(?:[.,]\d+)?)", low)
@@ -372,7 +372,7 @@ class Store:
       price REAL, old_price REAL, discount INTEGER, promo_until TEXT,
       unit TEXT, img TEXT, weight REAL, liquid INTEGER DEFAULT 0,
       kcal REAL, sugar REAL, protein REAL, fat REAL, src TEXT, nutriscore TEXT,
-      detail_ts REAL, off_ts REAL, seen_ts REAL);
+      detail_ts REAL, off_ts REAL, seen_ts REAL, carbs REAL);
     CREATE TABLE IF NOT EXISTS eaten (
       id INTEGER PRIMARY KEY, day TEXT, pid INTEGER, name TEXT,
       grams REAL, kcal REAL, sugar REAL, ts REAL);
@@ -385,6 +385,9 @@ class Store:
         self.con = sqlite3.connect(path, timeout=30)
         self.con.row_factory = sqlite3.Row
         self.con.executescript(self.SCHEMA)
+        cols = {r[1] for r in self.con.execute("PRAGMA table_info(products)")}
+        if "carbs" not in cols:  # база з v0.1
+            self.con.execute("ALTER TABLE products ADD COLUMN carbs REAL")
 
     def get(self, k, default=None):
         r = self.con.execute("SELECT v FROM state WHERE k=?", (k,)).fetchone()
@@ -553,10 +556,10 @@ def crawl(path, progress=None, cancel=None, workers=4, max_off=300):
                 pid, d = res
                 st.con.execute("""UPDATE products SET name=COALESCE(?,name),
                     weight=COALESCE(?,weight), liquid=MAX(liquid,?),
-                    kcal=?, sugar=?, protein=?, fat=?, src=?, detail_ts=? WHERE id=?""",
+                    kcal=?, sugar=?, protein=?, fat=?, carbs=?, src=?, detail_ts=? WHERE id=?""",
                                (d.get("name"), d.get("weight"), int(bool(d.get("liquid"))),
                                 d.get("kcal"), 0.0 if d.get("sugar_free_claim") else d.get("sugar"),
-                                d.get("protein"), d.get("fat"),
+                                d.get("protein"), d.get("fat"), d.get("carbs"),
                                 "atb" if d.get("kcal") is not None else None, time.time(), pid))
                 if done[0] % 20 == 0:
                     st.con.commit()
@@ -596,11 +599,22 @@ def crawl(path, progress=None, cancel=None, workers=4, max_off=300):
 
 # ---------- оцінка й порції ----------
 
+def sugar_bound(p):
+    """Цукор на 100 г, або верхня межа з вуглеводів (цукор ≤ вуглеводи), або None.
+    На сайті АТБ цукру зазвичай нема, а вуглеводи є."""
+    if p.get("sugar") is not None:
+        return p["sugar"]
+    return p.get("carbs")
+
+
 def tier(p):
     if p["kcal"] is None:
         return UNKNOWN
-    sugar = p["sugar"] if p["sugar"] is not None else 99
     (gk, gs), (yk, ys) = TIERS["drink" if p["liquid"] else "food"]
+    sugar = sugar_bound(p)
+    if p.get("sugar") is None and (sugar is None or sugar > gs):
+        # Цукор невідомий: судимо лише з калорій, але «зеленим» без цукру не робимо.
+        return YELLOW if p["kcal"] <= yk else RED
     if p["kcal"] <= gk and sugar <= gs:
         return GREEN
     if p["kcal"] <= yk and sugar <= ys:
@@ -621,7 +635,7 @@ def portion(p, kcal_left, sugar_left, snack_kcal):
         return {"kind": "day_full", "grams": None}
     lim = budget / p["kcal"] * 100
     by_sugar = False
-    if p["sugar"] and p["sugar"] > 0:
+    if p.get("sugar") and p["sugar"] > 0:
         s_lim = max(float(sugar_left), 0) / p["sugar"] * 100
         if s_lim < lim:
             lim, by_sugar = s_lim, True
