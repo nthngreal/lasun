@@ -16,6 +16,83 @@ CARD = ('<div class="catalog-item"><div class="tag">-28% до 20.10</div>'
 PLAIN = ('<div class="catalog-item"><a href="/product/{slug}"><img alt="Сік 1,93л Садочок"></a>'
          '<div class="price">89.90 грн/шт</div></div>')
 
+# Справжня розмітка АТБ (жовтень 2026), скорочена.
+REAL_PLAIN = (
+    '<article class=" catalog-item js-product-container "><div class="catalog-item__photo">'
+    '<a href="/product/morozivo-05-kg-rud-100-morozivo"><picture><img src="https://src.zakaz.'
+    'atbmarket.com/cache/photos/70213/catalog_list_70213.png" alt="Купити Морозиво 0,5 кг Рудь '
+    '100% морозиво у АТБ Market"></picture><!-- заглушка для зображення --></a>'
+    '<div class="catalog-item__labels"> </div><div class="b-addToCart" data-discount="0">'
+    '<div data-tippy-content="Товари зі знижкою" class="b-addToCart__product-day freeze-tippy">'
+    '<span class="b-addToCart__product-day-text">Товари зі знижкою</span> '
+    '<span class="b-addToCart__product-day-text">16.06</span> </div></div></div>'
+    '<div class="catalog-item__info"> <!-- <a href="">Колготи, гольфи</a>--> </div>'
+    '<div class="catalog-item__bottom"><div class="product-price">'
+    '<data value="153.40" class="product-price__top"><span>153.<span class="product-price__coin">'
+    '40</span></span><abbr>грн<span class="product-price__unit">/шт</span></abbr></data></div>'
+    '</div></article>')
+REAL_PROMO = (
+    '<article class=" catalog-item js-product-container "><div class="catalog-item__photo">'
+    '<a href="/product/morozivo-70-g-rud"><img src="https://src.zakaz.atbmarket.com/cache/photos/'
+    '41425/catalog_list_41425.jpg" alt="Купити Морозиво 70 г Рудь у АТБ Market"></a>'
+    '<div class="catalog-item__labels"><span class="custom-product-label"> -45% <span class='
+    '"custom-product-label__date">до 20.10</span></span></div></div>'
+    '<div class="catalog-item__bottom"><div class="product-price product-price--sale">'
+    '<data value="18.90" class="product-price__top"><span>18.<span>90</span></span></data>'
+    '<data value="34.90" class="product-price__bottom"><span>34.<span>90</span></span></data>'
+    '</div></div></article>')
+# Сторінка товару: «Харчові властивості» на сайті закоментовані й однакові для всіх.
+REAL_PAGE = (
+    '<h1>Морозиво 0,5 кг Рудь 100% морозиво</h1><div class="product-characteristics">'
+    '<div>Склад</div><div>Молоко знежирене, цукор, олія кокосова</div>'
+    '<!-- <div class="product-characteristics-title">Харчові властивості</div>'
+    '<div class="product-characteristics__name">Калорійність</div>'
+    '<div class="product-characteristics__value">1791 кДж/100г</div>'
+    '<div class="product-characteristics__name">Вуглеводи</div>'
+    '<div class="product-characteristics__value">88.1 г/100г</div> -->'
+    '<div>Торгова марка</div><div>Рудь</div></div>')
+
+
+class RealMarkupTest(unittest.TestCase):
+    def test_plain_card_has_no_fake_promo(self):
+        html = REAL_PROMO + REAL_PLAIN
+        cards = dict(core.split_cards(html))
+        d = core.parse_card("morozivo-05-kg-rud-100-morozivo",
+                            cards["morozivo-05-kg-rud-100-morozivo"])
+        self.assertEqual((d["price"], d["old_price"], d["discount"]), (153.4, None, None))
+        self.assertTrue(d["img"].endswith("catalog_list_70213.png"))
+        self.assertEqual(d["name"], "Морозиво 0,5 кг Рудь 100% морозиво")
+
+    def test_promo_card(self):
+        d = core.parse_card("morozivo-70-g-rud", REAL_PROMO)
+        self.assertEqual((d["price"], d["old_price"], d["discount"], d["promo_until"]),
+                         (18.9, 34.9, 45, "20.10"))
+
+    def test_commented_nutrition_is_ignored(self):
+        d = core.parse_product_page(REAL_PAGE)
+        self.assertIsNone(d.get("kcal"))
+        self.assertIsNone(d.get("carbs"))
+        self.assertEqual(d["weight"], 500)
+
+    def test_old_database_is_cleaned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "db.sqlite")
+            st = core.Store(path)
+            st.con.execute("""INSERT INTO products (slug,name,price,old_price,discount,kcal,
+                carbs,src,detail_ts) VALUES ('x','X',2.06,79.9,97,428.1,88.1,'atb',1)""")
+            st.con.execute("""INSERT INTO products (slug,name,price,kcal,src,detail_ts)
+                VALUES ('y','Y',10,55,'off',1)""")
+            st.set("last_crawl", time.time())
+            st.set("parse_v", "1")
+            st.con.commit()
+            st.con.close()
+            st = core.Store(path)
+            x = dict(st.con.execute("SELECT * FROM products WHERE slug='x'").fetchone())
+            y = dict(st.con.execute("SELECT * FROM products WHERE slug='y'").fetchone())
+            self.assertEqual((x["old_price"], x["kcal"], x["detail_ts"]), (None, None, None))
+            self.assertEqual(y["kcal"], 55)
+            self.assertEqual(st.last_crawl(), 0)
+
 
 class NutritionTest(unittest.TestCase):
     def test_atb_kabanosy_text(self):

@@ -110,6 +110,9 @@ def http_get(url, timeout=30, headers=None, tries=3):
 # ---------- розбір сторінок АТБ ----------
 
 def to_text(html):
+    # Коментарі прибираємо: АТБ ховає в них шаблон «Харчові властивості»
+    # з однаковими для всіх товарів числами (1791 кДж, 88.1 г вуглеводів).
+    html = re.sub(r"(?s)<!--.*?-->", " ", html)
     html = re.sub(r"(?is)<(script|style|noscript)\b.*?</\1>", " ", html)
     html = re.sub(r"(?i)<br\s*/?>|</(p|div|li|tr|h\d|span|td|dd|dt)>", "\n", html)
     text = htmlmod.unescape(re.sub(r"<[^>]+>", " ", html))
@@ -181,7 +184,20 @@ def split_cards(html):
     return out
 
 
+def _card_prices(chunk):
+    """Ціни з розмітки картки АТБ: <data value="18.90" class="product-price__top">
+    — поточна, product-price__bottom — стара (є лише в акції)."""
+    def val(cls):
+        m = (re.search(r'<data\b[^>]*value="([\d.,]+)"[^>]*class="[^"]*\b%s\b' % cls, chunk)
+             or re.search(r'<data\b[^>]*class="[^"]*\b%s\b[^"]*"[^>]*value="([\d.,]+)"' % cls, chunk))
+        return num(m.group(1)) if m else None
+    return val("product-price__top"), val("product-price__bottom")
+
+
 def parse_card(slug, chunk):
+    chunk = re.sub(r"(?s)<!--.*?-->", " ", chunk)
+    # «Товари зі знижкою 16.06» — службова плашка з датою, не ціна.
+    chunk = re.sub(r'(?s)<div[^>]*b-addToCart__product-day.*?</div>', " ", chunk)
     text = to_text(chunk)
     until = None
     m = re.search(r"до\s*(\d{2}\.\d{2})(?:\.\d{2,4})?", text)
@@ -190,11 +206,14 @@ def parse_card(slug, chunk):
         text_np = text[:m.start()] + " " + text[m.end():]
     else:
         text_np = text
-    prices = [num(x) for x in re.findall(
-        r"(?<![\d,.])(\d{1,6}\.\d{2})(?![\d])(?!\s*(?:(?:л|мл|г|гр|кг)(?![а-яіїєґ])|%))", text_np)]
-    # ціни також часто лежать у value="" / data-price=""
-    for x in re.findall(r'(?:value|data-price|content)="(\d{1,6}\.\d{2})"', chunk):
-        prices.append(num(x))
+    top, bottom = _card_prices(chunk)
+    if top:
+        prices = [top] + ([bottom] if bottom and bottom > top else [])
+    else:
+        # запасний варіант, якщо АТБ змінить розмітку: шукаємо ціни в тексті
+        prices = [num(x) for x in re.findall(
+            r"(?<![\d,.])(\d{1,6}\.\d{2})(?![\d])(?!\s*(?:(?:л|мл|г|гр|кг)(?![а-яіїєґ])|%))",
+            text_np)]
     prices = [p for p in prices if p and p > 0]
     disc = None
     m = re.search(r"(?<![\w,.])[-−–]\s?(\d{1,2})\s?%", text)
@@ -229,9 +248,15 @@ def parse_card(slug, chunk):
     if not name:
         lines = [ln for ln in text.split("\n") if re.search(r"[А-Яа-яІіЇїЄєҐґ]{3}", ln)]
         name = max(lines, key=len)[:200] if lines else slug
-    m = re.search(r"photos/(\d+)/", chunk)
-    img = ("https://src.zakaz.atbmarket.com/cache/photos/%s/catalog_list_%s.jpg"
-           % (m.group(1), m.group(1))) if m else None
+    img = None
+    m = re.search(r'<img\b[^>]*\bsrc="(https?://[^"]+\.(?:jpe?g|png|webp))"', chunk)
+    if m:
+        img = htmlmod.unescape(m.group(1))
+    else:
+        m = re.search(r"photos/(\d+)/", chunk)
+        if m:
+            img = ("https://src.zakaz.atbmarket.com/cache/photos/%s/catalog_list_%s.jpg"
+                   % (m.group(1), m.group(1)))
     unit = "кг" if re.search(r"грн\s*/\s*кг", text) else "шт"
     return {"slug": slug, "name": name, "price": price, "old_price": old,
             "discount": disc, "promo_until": until if old else None,
@@ -379,6 +404,8 @@ class Store:
     CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT);
     """
 
+    PARSE_V = "2"
+
     def __init__(self, path):
         self.path = path
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -388,6 +415,16 @@ class Store:
         cols = {r[1] for r in self.con.execute("PRAGMA table_info(products)")}
         if "carbs" not in cols:  # база з v0.1
             self.con.execute("ALTER TABLE products ADD COLUMN carbs REAL")
+        if self.get("parse_v") != self.PARSE_V:
+            # v0.1 читала шаблонні калорії з HTML-коментаря і дати як ціни:
+            # стираємо це й просимо перечитати сайт.
+            self.con.execute("""UPDATE products SET old_price=NULL, discount=NULL,
+                promo_until=NULL, detail_ts=NULL""")
+            self.con.execute("""UPDATE products SET kcal=NULL, sugar=NULL, protein=NULL,
+                fat=NULL, carbs=NULL, src=NULL, off_ts=NULL
+                WHERE src IS NULL OR src='atb'""")
+            self.con.execute("DELETE FROM state WHERE k IN ('last_crawl','last_crawl_ok')")
+            self.set("parse_v", self.PARSE_V)
 
     def get(self, k, default=None):
         r = self.con.execute("SELECT v FROM state WHERE k=?", (k,)).fetchone()
@@ -664,6 +701,12 @@ def check_site():
     html = http_get(SITE + "/catalog/349-yogurti") or ""
     cards = split_cards(html)
     out.append("cards: %d" % len(cards))
+    time.sleep(1)
+    ice = split_cards(http_get(SITE + "/catalog/334-morozivo?page=2") or "")
+    for slug, chunk in ice:
+        d = parse_card(slug, chunk)
+        out.append("  ice %s | %s | old %s | -%s%% | %s" % (d["name"][:40], d["price"],
+                   d["old_price"], d["discount"], (d["img"] or "NO IMAGE")[-12:]))
     for slug, chunk in cards[:3]:
         d = parse_card(slug, chunk)
         out.append("  %s | %s | old %s | -%s%% %s" % (d["name"][:50], d["price"], d["old_price"],
